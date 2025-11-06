@@ -32,8 +32,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['buscar'])) {
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['agregar_usuario'])) {
     $usuario = trim($_POST['Nombre']);
     $contraseña = trim($_POST['Contraseña']);
+    $rol = trim($_POST['Rol']);
     
-    if (!empty($usuario) && !empty($contraseña)) {
+    if (!empty($usuario) && !empty($contraseña) && !empty($rol)) {
         // Validar si el usuario ya existe
         $sql_check = "SELECT id_Usuario FROM usuario WHERE Nombre= ?";
         $stmt_check = $con->prepare($sql_check);
@@ -51,9 +52,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['agregar_usuario'])) {
             $stmt_check->close();
             
             // Insertar nuevo usuario
-            $sql = "INSERT INTO usuario (Nombre, Contraseña, Estado) VALUES (?, ?, 'activo')";
+            $sql = "INSERT INTO usuario VALUES (default,?, ?, ?, 'activo')";
             $stmt = $con->prepare($sql);
-            $stmt->bind_param("ss", $usuario, $contraseña);
+            $stmt->bind_param("sss",$rol, $usuario, $contraseña);
             
             if ($stmt->execute()) {
                 $mensaje = '<div class="alert alert-success alert-dismissible fade show" role="alert">
@@ -108,13 +109,17 @@ if (isset($_GET['habilitar'])) {
     $stmt->close();
 }
 
-// Procesar editar usuario
+// Procesar editar usuario - CORREGIDO
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['editar_usuario'])) {
     $id = intval($_POST['id_Usuario']);
     $usuario = trim($_POST['Nombre']);
     $contraseña = trim($_POST['Contraseña']);
+    $rol = trim($_POST['Rol']);
     
-    if (!empty($usuario)) {
+    // Debug: mostrar datos recibidos
+    error_log("Datos recibidos para editar - ID: $id, Usuario: $usuario, Rol: $rol");
+    
+    if (!empty($usuario) && !empty($rol)) {
         // Validar si el nuevo usuario ya existe (excluyendo el usuario actual)
         $sql_check = "SELECT id_Usuario FROM usuario WHERE Nombre = ? AND id_Usuario != ?";
         $stmt_check = $con->prepare($sql_check);
@@ -133,13 +138,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['editar_usuario'])) {
             
             // Actualizar usuario
             if (!empty($contraseña)) {
-                $sql = "UPDATE usuario SET Nombre = ?, Contraseña = ? WHERE id_Usuario = ?";
+                $sql = "UPDATE usuario SET Rol = ?, Nombre = ?, Contraseña = ? WHERE id_Usuario = ?";
                 $stmt = $con->prepare($sql);
-                $stmt->bind_param("ssi", $usuario, $contraseña, $id);
+                $stmt->bind_param("sssi", $usuario, $contraseña, $rol, $id);
             } else {
-                $sql = "UPDATE usuario SET Nombre = ? WHERE id_Usuario = ?";
+                $sql = "UPDATE usuario SET Rol = ?, Nombre = ? WHERE id_Usuario = ?";
                 $stmt = $con->prepare($sql);
-                $stmt->bind_param("si", $usuario, $id);
+                $stmt->bind_param("ssi", $usuario, $rol, $id);
             }
             
             if ($stmt->execute()) {
@@ -148,14 +153,25 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['editar_usuario'])) {
                     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                 </div>';
             } else {
+                $error_msg = $stmt->error;
                 $mensaje = '<div class="alert alert-danger alert-dismissible fade show" role="alert">
-                    <i class="fas fa-exclamation-circle me-2"></i>Error al actualizar usuario.
+                    <i class="fas fa-exclamation-circle me-2"></i>Error al actualizar usuario: ' . htmlspecialchars($error_msg) . '
                     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                 </div>';
+                error_log("Error en actualización: " . $error_msg);
             }
             $stmt->close();
         }
+    } else {
+        $mensaje = '<div class="alert alert-warning alert-dismissible fade show" role="alert">
+            <i class="fas fa-exclamation-circle me-2"></i>Por favor, completa todos los campos obligatorios.
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>';
     }
+    
+    // Redirigir para evitar reenvío del formulario
+    header("Location: admin.php");
+    exit();
 }
 
 // Construir la consulta SQL según los parámetros de búsqueda
@@ -184,13 +200,20 @@ if (!empty($termino_busqueda)) {
             $params[] = "%" . $termino_busqueda . "%";
             $types .= "s";
             break;
+        case 'rol':
+            $sql_where = " WHERE Rol = ?";
+            $sql_count_where = " WHERE Rol = ?";
+            $params[] = $termino_busqueda;
+            $types .= "s";
+            break;
         case 'todos':
-            $sql_where = " WHERE id_Usuario = ? OR Nombre LIKE ? OR Contraseña LIKE ?";
-            $sql_count_where = " WHERE id_Usuario = ? OR Nombre LIKE ? OR Contraseña LIKE ?";
+            $sql_where = " WHERE id_Usuario = ? OR Nombre LIKE ? OR Contraseña LIKE ? OR Rol = ?";
+            $sql_count_where = " WHERE id_Usuario = ? OR Nombre LIKE ? OR Contraseña LIKE ? OR Rol = ?";
             $params[] = $termino_busqueda;
             $params[] = "%" . $termino_busqueda . "%";
             $params[] = "%" . $termino_busqueda . "%";
-            $types .= "iss";
+            $params[] = $termino_busqueda;
+            $types .= "isss";
             break;
     }
 }
@@ -238,6 +261,7 @@ if ($resultado->num_rows > 0) {
     $datos_tabla .= '<th>ID</th>';
     $datos_tabla .= '<th>Usuario</th>';
     $datos_tabla .= '<th>Contraseña</th>';
+    $datos_tabla .= '<th>Rol</th>';
     $datos_tabla .= '<th>Estado</th>';
     $datos_tabla .= '<th>Acciones</th>';
     $datos_tabla .= '</tr>';
@@ -248,6 +272,16 @@ if ($resultado->num_rows > 0) {
         $estado_badge = $fila['Estado'] == 'activo' ? 
             '<span class="badge bg-success">Activo</span>' : 
             '<span class="badge bg-secondary">Inactivo</span>';
+        
+        // Definir color del badge según el rol (0=Admin, 1=Usuario)
+        $rol_badge = '';
+        if ($fila['Rol'] == '0') {
+            $rol_badge = '<span class="badge bg-danger">Admin (0)</span>';
+        } else if ($fila['Rol'] == '1') {
+            $rol_badge = '<span class="badge bg-primary">Usuario (1)</span>';
+        } else {
+            $rol_badge = '<span class="badge bg-secondary">' . htmlspecialchars($fila['Rol']) . '</span>';
+        }
         
         $boton_estado = $fila['Estado'] == 'activo' ?
             '<button class="btn btn-sm btn-warning me-1" title="Deshabilitar" onclick="confirmarDeshabilitar(' . $fila['id_Usuario'] . ')">
@@ -261,11 +295,12 @@ if ($resultado->num_rows > 0) {
         $datos_tabla .= '<td>' . $fila['id_Usuario'] . '</td>';
         $datos_tabla .= '<td>' . htmlspecialchars($fila['Nombre']) . '</td>';
         $datos_tabla .= '<td>' . htmlspecialchars($fila['Contraseña']) . '</td>';
+        $datos_tabla .= '<td>' . $rol_badge . '</td>';
         $datos_tabla .= '<td>' . $estado_badge . '</td>';
         $datos_tabla .= '<td>';
         $datos_tabla .= $boton_estado;
         $datos_tabla .= '<button class="btn btn-sm btn-primary me-1" title="Editar" data-bs-toggle="modal" data-bs-target="#modalEditar" 
-                         onclick="cargarDatosEditar(' . $fila['id_Usuario'] . ', \'' . htmlspecialchars($fila['Nombre']) . '\', \'' . htmlspecialchars($fila['Contraseña']) . '\')">
+                         onclick="cargarDatosEditar(' . $fila['id_Usuario'] . ', \'' . htmlspecialchars($fila['Nombre']) . '\', \'' . htmlspecialchars($fila['Contraseña']) . '\', \'' . htmlspecialchars($fila['Rol']) . '\')">
                 <i class="fas fa-edit"></i>
              </button>';
         $datos_tabla .= '</td>';
@@ -278,8 +313,12 @@ if ($resultado->num_rows > 0) {
     $sql_count_estados = "SELECT Estado, COUNT(*) as total FROM usuario" . $sql_count_where . " GROUP BY Estado";
     $stmt_estados = $con->prepare($sql_count_estados);
     
+    // Contar roles (sin paginación para estadísticas)
+    $sql_count_roles = "SELECT Rol, COUNT(*) as total FROM usuario" . $sql_count_where . " GROUP BY Rol";
+    $stmt_roles = $con->prepare($sql_count_roles);
+    
     if (!empty($termino_busqueda)) {
-        // Reconstruir parámetros para la consulta de estadísticas
+        // Reconstruir parámetros para las consultas de estadísticas
         $params_estados = array();
         $types_estados = "";
         
@@ -296,15 +335,21 @@ if ($resultado->num_rows > 0) {
                 $params_estados[] = "%" . $termino_busqueda . "%";
                 $types_estados .= "s";
                 break;
+            case 'rol':
+                $params_estados[] = $termino_busqueda;
+                $types_estados .= "s";
+                break;
             case 'todos':
                 $params_estados[] = $termino_busqueda;
                 $params_estados[] = "%" . $termino_busqueda . "%";
                 $params_estados[] = "%" . $termino_busqueda . "%";
-                $types_estados .= "iss";
+                $params_estados[] = $termino_busqueda;
+                $types_estados .= "isss";
                 break;
         }
         
         $stmt_estados->bind_param($types_estados, ...$params_estados);
+        $stmt_roles->bind_param($types_estados, ...$params_estados);
     }
     
     $stmt_estados->execute();
@@ -320,6 +365,15 @@ if ($resultado->num_rows > 0) {
         }
     }
     $stmt_estados->close();
+    
+    // Obtener estadísticas de roles
+    $stmt_roles->execute();
+    $result_roles = $stmt_roles->get_result();
+    $roles_count = array();
+    while ($row = $result_roles->fetch_assoc()) {
+        $roles_count[$row['Rol']] = $row['total'];
+    }
+    $stmt_roles->close();
     
     // Generar paginación
     $paginacion = generarPaginacion($pagina_actual, $total_paginas, $termino_busqueda, $campo_busqueda);
@@ -388,6 +442,48 @@ if ($resultado->num_rows > 0) {
             </div>
         </div>
     </div>
+    
+    <!-- Estadísticas de Roles -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header bg-dark text-white">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-chart-pie me-2"></i>Distribución de Roles
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">';
+    
+    // Mostrar estadísticas de roles
+    $total_admins = isset($roles_count['0']) ? $roles_count['0'] : 0;
+    $total_usuarios = isset($roles_count['1']) ? $roles_count['1'] : 0;
+    
+    $contenido_principal .= '
+                        <div class="col-md-3 mb-3">
+                            <div class="card bg-danger text-white">
+                                <div class="card-body text-center">
+                                    <h3>' . $total_admins . '</h3>
+                                    <p class="mb-0">Administradores (0)</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <div class="card bg-primary text-white">
+                                <div class="card-body text-center">
+                                    <h3>' . $total_usuarios . '</h3>
+                                    <p class="mb-0">Usuarios (1)</p>
+                                </div>
+                            </div>
+                        </div>';
+    
+    $contenido_principal .= '
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
     <div class="row mb-4">
         <div class="col-12">
             <div class="card">
@@ -411,18 +507,19 @@ if ($resultado->num_rows > 0) {
                         <i class="fas fa-search me-2"></i>Buscar Usuarios
                     </h5>
                     <form method="POST" action="admin.php" class="row g-3">
-                        <div class="col-md-6">
+                        <div class="col-md-5">
                             <label for="termino_busqueda" class="form-label">Término de búsqueda</label>
                             <input type="text" class="form-control" id="termino_busqueda" name="termino_busqueda" 
                                    value="' . htmlspecialchars($termino_busqueda) . '" placeholder="Ingrese término a buscar...">
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-5">
                             <label for="campo_busqueda" class="form-label">Buscar por</label>
                             <select class="form-select" id="campo_busqueda" name="campo_busqueda">
                                 <option value="todos" ' . ($campo_busqueda == 'todos' ? 'selected' : '') . '>Todos los campos</option>
                                 <option value="id" ' . ($campo_busqueda == 'id' ? 'selected' : '') . '>ID</option>
                                 <option value="usuario" ' . ($campo_busqueda == 'usuario' ? 'selected' : '') . '>Usuario</option>
                                 <option value="contraseña" ' . ($campo_busqueda == 'contraseña' ? 'selected' : '') . '>Contraseña</option>
+                                <option value="rol" ' . ($campo_busqueda == 'rol' ? 'selected' : '') . '>Rol</option>
                             </select>
                         </div>
                         <div class="col-md-2 d-flex align-items-end">
@@ -553,308 +650,9 @@ if (isset($mensaje)) {
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
     <title>Panel de Administración</title>
+    <link href="admin.css" rel="stylesheet">
     <style>
-        /* Estilos CSS adaptados para que ocupe toda la página */
-        :root {
-            --primary-blue: #2c5aa0;
-            --light-blue: #3a6bc0;
-            --dark-gray: #2a2a2a;
-            --medium-gray: #4a4a4a;
-            --light-gray: #6a6a6a;
-            --lighter-gray: #9a9a9a;
-            --lightest-gray: #e0e0e0;
-            --background-gray: #f5f5f5;
-        }
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        }
-
-        body {
-            background-color: var(--dark-gray);
-            color: white;
-            line-height: 1.6;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-
-        header {
-            background-color: var(--dark-gray);
-            color: white;
-            padding: 1rem 0;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-            flex-shrink: 0;
-        }
-
-        .header-content {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            max-width: 100%;
-            margin: 0 auto;
-            padding: 0 20px;
-        }
-
-        .logo {
-            font-size: 1.8rem;
-            font-weight: bold;
-            color: white;
-        }
-
-        .logo span {
-            color: var(--primary-blue);
-        }
-
-        nav ul {
-            display: flex;
-            list-style: none;
-        }
-
-        nav ul li {
-            margin-left: 1.5rem;
-        }
-
-        nav ul li a {
-            color: white;
-            text-decoration: none;
-            transition: color 0.3s;
-            font-weight: 500;
-        }
-
-        nav ul li a:hover {
-            color: var(--primary-blue);
-        }
-
-        .main-container {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            width: 100%;
-            padding: 20px;
-            overflow-x: auto;
-        }
-
-        .table-container {
-            background-color: white;
-            border-radius: 10px;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            overflow: hidden;
-            color: var(--dark-gray);
-            width: 100%;
-        }
-
-        .table-header {
-            background-color: var(--primary-blue);
-            color: white;
-            padding: 1.2rem;
-            text-align: center;
-            font-size: 1.3rem;
-            font-weight: 600;
-        }
-
-        .table-content {
-            padding: 1.5rem;
-            background-color: #fafafa;
-            width: 100%;
-        }
-
-        .table-responsive {
-            width: 100%;
-            overflow-x: auto;
-        }
-
-        .table {
-            width: 100%;
-            margin-bottom: 0;
-        }
-
-        .table th {
-            background-color: var(--dark-gray);
-            color: white;
-            border: none;
-            padding: 12px 15px;
-            white-space: nowrap;
-        }
-
-        .table td {
-            border-color: var(--lightest-gray);
-            padding: 12px 15px;
-            vertical-align: middle;
-        }
-
-        .table-striped tbody tr:nth-of-type(odd) {
-            background-color: rgba(0, 0, 0, 0.02);
-        }
-
-        .table-hover tbody tr:hover {
-            background-color: rgba(0, 0, 0, 0.05);
-        }
-
-        .card {
-            border: none;
-            box-shadow: 0 0.15rem 1.75rem 0 rgba(58, 59, 69, 0.15);
-            transition: all 0.3s;
-        }
-
-        .card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 0.5rem 2rem 0 rgba(58, 59, 69, 0.2);
-        }
-
-        .btn {
-            transition: all 0.3s;
-        }
-
-        .btn:hover {
-            transform: translateY(-2px);
-        }
-
-        .alert {
-            border: none;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-        }
-
-        .modal-content {
-            border: none;
-            border-radius: 10px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-        }
-
-        .modal-header {
-            background-color: var(--primary-blue);
-            color: white;
-            border-radius: 10px 10px 0 0;
-        }
-
-        .btn-close {
-            filter: invert(1);
-        }
-
-        footer {
-            background-color: var(--dark-gray);
-            color: white;
-            padding: 1.2rem 0;
-            text-align: center;
-            flex-shrink: 0;
-            margin-top: auto;
-        }
-
-        .footer-content {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            max-width: 100%;
-            margin: 0 auto;
-            padding: 0 20px;
-        }
-
-        .footer-links {
-            display: flex;
-            margin: 0.8rem 0;
-        }
-
-        .footer-links a {
-            color: white;
-            margin: 0 1rem;
-            text-decoration: none;
-            font-weight: 500;
-        }
-
-        .footer-links a:hover {
-            color: var(--primary-blue);
-        }
-
-        /* Estilos para mensajes de error y éxito */
-        .error-message {
-            color: #ff4444;
-            background-color: #ffeaea;
-            padding: 10px;
-            border-radius: 5px;
-            margin: 10px 0;
-            border: 1px solid #ffcccc;
-            animation: fadeIn 0.3s ease-in;
-        }
-
-        .success-message {
-            color: #00aa00;
-            background-color: #eaffea;
-            padding: 10px;
-            border-radius: 5px;
-            margin: 10px 0;
-            border: 1px solid #ccffcc;
-            animation: fadeIn 0.3s ease-in;
-        }
-
-        /* Animación de aparición */
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(-10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        /* Responsive */
-        @media (max-width: 768px) {
-            .header-content {
-                flex-direction: column;
-                text-align: center;
-            }
-            
-            nav ul {
-                margin-top: 1rem;
-                flex-wrap: wrap;
-                justify-content: center;
-            }
-            
-            nav ul li {
-                margin: 0 0.8rem 0.5rem;
-            }
-            
-            .footer-links {
-                flex-wrap: wrap;
-                justify-content: center;
-            }
-            
-            .footer-links a {
-                margin: 0.5rem;
-            }
-            
-            .table-content {
-                padding: 1rem;
-            }
-            
-            .table th, .table td {
-                padding: 8px 10px;
-                font-size: 0.9rem;
-            }
-            
-            .btn-sm {
-                padding: 0.25rem 0.5rem;
-                font-size: 0.8rem;
-            }
-        }
-
-        @media (max-width: 576px) {
-            .main-container {
-                padding: 10px;
-            }
-            
-            .table-header {
-                padding: 1rem;
-                font-size: 1.1rem;
-            }
-            
-            .table-content {
-                padding: 0.5rem;
-            }
-            
-            .card-body {
-                padding: 1rem;
-            }
-        }
+       
     </style>
 </head>
 <body>
@@ -905,6 +703,15 @@ if (isset($mensaje)) {
                             <input type="text" class="form-control" id="Contraseña" name="Contraseña" required 
                                    placeholder="Ingrese la contraseña">
                         </div>
+                        <div class="mb-3">
+                            <label for="Rol" class="form-label">Rol <span class="text-danger">*</span></label>
+                            <select class="form-select" id="Rol" name="Rol" required>
+                                <option value="">Seleccione un rol</option>
+                                <option value="0">Administrador (0)</option>
+                                <option value="1">Usuario (1)</option>
+                            </select>
+                            <div class="form-text">0 = Administrador, 1 = Usuario</div>
+                        </div>
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
@@ -937,6 +744,15 @@ if (isset($mensaje)) {
                             <label for="editar_Contraseña" class="form-label">Contraseña (dejar vacío para no cambiar)</label>
                             <input type="text" class="form-control" id="editar_Contraseña" name="Contraseña" 
                                    placeholder="Dejar vacío para mantener la contraseña actual">
+                        </div>
+                        <div class="mb-3">
+                            <label for="editar_Rol" class="form-label">Rol <span class="text-danger">*</span></label>
+                            <select class="form-select" id="editar_Rol" name="Rol" required>
+                                <option value="">Seleccione un rol</option>
+                                <option value="0">Administrador (0)</option>
+                                <option value="1">Usuario (1)</option>
+                            </select>
+                            <div class="form-text">0 = Administrador, 1 = Usuario</div>
                         </div>
                     </div>
                     <div class="modal-footer">
@@ -977,10 +793,12 @@ if (isset($mensaje)) {
             }
         }
 
-        function cargarDatosEditar(id, usuario, contraseña) {
+        function cargarDatosEditar(id, usuario, contraseña, rol) {
+            console.log('Cargando datos para editar:', id, usuario, contraseña, rol);
             document.getElementById('editar_id').value = id;
             document.getElementById('editar_Nombre').value = usuario;
             document.getElementById('editar_Contraseña').value = contraseña;
+            document.getElementById('editar_Rol').value = rol;
         }
 
         // Limpiar formulario de agregar cuando se cierra el modal
@@ -994,6 +812,15 @@ if (isset($mensaje)) {
             if (terminoBusqueda) {
                 document.getElementById('termino_busqueda').focus();
             }
+        });
+
+        // Debug: mostrar datos del formulario antes de enviar
+        document.getElementById('formEditar').addEventListener('submit', function(e) {
+            console.log('Enviando formulario de edición:');
+            console.log('ID:', document.getElementById('editar_id').value);
+            console.log('Usuario:', document.getElementById('editar_Nombre').value);
+            console.log('Contraseña:', document.getElementById('editar_Contraseña').value);
+            console.log('Rol:', document.getElementById('editar_Rol').value);
         });
     </script>
 </body>
